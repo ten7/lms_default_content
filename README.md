@@ -52,6 +52,22 @@ On import, the UUID is resolved back to a numeric `target_id` and the remaining 
 
 ---
 
+## Comparison with lms_yaml
+
+The [lms_yaml](https://www.drupal.org/project/lms_yaml) module also exports and imports LMS courses as YAML files and may appear to solve the same problem. There are meaningful differences:
+
+| | `lms_yaml` | `lms_default_content` |
+|---|---|---|
+| **Approach** | Standalone importer/exporter with its own YAML format | Extends the `default_content` ecosystem |
+| **Entity references** | Uses numeric IDs, which are environment-specific | Uses UUIDs throughout — safe to commit and share |
+| **Ecosystem fit** | Works independently | Integrates with `default_content`'s dependency resolution, install hooks, and module-based content bundling |
+| **Bundling as a module** | Not designed for this | Content ships as a standard Drupal module; enabling it imports the content |
+| **Security coverage** | Not covered by Drupal's security advisory policy | Inherits the security posture of `default_content` |
+
+If you are already using `default_content` to manage other site content (media, taxonomy, blocks), `lms_default_content` keeps your LMS courses in the same workflow. If you just need a one-off export/import tool and don't need module-based bundling, `lms_yaml` may be simpler.
+
+---
+
 ## Usage
 
 ### Requirements
