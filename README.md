@@ -1,120 +1,102 @@
-# LMS Default Content — Technical Summary
+# LMS Default Content
 
-This document covers the architecture, decisions, and module structure for how we export and import LMS course content across environments using Drupal's `default_content` ecosystem.
-
----
-
-## The Problem
-
-We needed a way to bundle LMS course content (courses, lessons, activities, and course images) so it can be installed on any fresh environment by enabling a module — the same pattern we already use for media via `greendale_default_content_media`.
-
-The challenge is that `lms_reference` fields (used on course entities to reference lessons) carry additional metadata beyond a plain entity reference: `mandatory`, `required_score`, `time_limit`, `auto_repeat_failed`, and `max_score`. The `default_content` module's built-in normalizer has no awareness of this extra data and would silently drop it during export/import. Additionally, environment-specific numeric entity IDs would appear in the exported YAML instead of stable UUIDs.
+Extends Drupal's [default_content](https://www.drupal.org/project/default_content) module to correctly export and import content for sites using the [Drupal LMS module](https://www.drupal.org/project/lms).
 
 ---
 
-## The Constraint
+## The problem this module solves
 
-**No modifications to any files in `web/modules/contrib/`.** All fixes and extensions are implemented in new custom modules only. Patching or forking contrib modules was explicitly ruled out.
+The `default_content` module is a widely-used approach for bundling site content as UUID-based YAML files that can be imported by enabling a module. This makes it straightforward to ship default content — media, taxonomy terms, nodes — alongside a site installation profile or recipe.
 
----
+However, `default_content`'s built-in normalizer has no awareness of the custom field types introduced by the LMS module. Specifically, `lms_reference` fields (used on course entities to reference lessons) store a serialized data blob alongside the entity reference containing LMS metadata: `mandatory`, `required_score`, `time_limit`, `auto_repeat_failed`, and `max_score`. Without this module:
 
-## What We Built
+- The metadata blob is **silently dropped** during export — courses import without their lesson configuration
+- Entity references may export as **raw numeric IDs** rather than stable UUIDs, breaking imports on any environment other than the one they were exported from
+- Computed fields (such as `start_link` on course entities) are written to the YAML as binary blobs, producing invalid export files
 
-### `lms_default_content` (custom, contrib-intended)
-
-**Location:** `web/modules/custom/lms_default_content/`
-
-A reusable module intended to eventually be contributed upstream. It extends `default_content`'s normalizer to handle LMS entity types correctly. It has no site-specific content — only the plumbing.
-
-**How it overrides the normalizer without patching contrib:**
-
-Drupal's service provider system allows any module to alter another module's service definitions at container compile time. `LmsDefaultContentServiceProvider::alter()` replaces the `default_content.content_entity_normalizer` service class with our own, guaranteeing the override regardless of module weight — no YAML service ID conflicts needed.
-
-**What the custom normalizer (`LmsContentEntityNormalizer`) fixes:**
-
-1. **Computed field exclusion** — The parent normalizer filters internal and read-only fields but not computed ones. The `start_link` field on course entities is a computed `BaseFieldDefinition` and would otherwise be written to the export YAML as a binary blob. Our override excludes any field whose storage definition is a `BaseFieldDefinition` with `isComputed() === true`.
-
-2. **Unloaded entity reference resolution** — When the `default_content` normalizer encounters an entity reference whose entity wasn't lazy-loaded, it falls through to returning the raw numeric `target_id` (e.g. `target_id: 2`). Numeric IDs are environment-specific and break on import elsewhere. Our override explicitly loads the entity by `target_id` + `target_type` and emits the UUID instead. It also suppresses the raw numeric ID entirely if the entity cannot be loaded.
-
-3. **`lms_reference` field serialization** — LMS reference fields store a serialized data blob alongside the entity reference. The parent normalizer has no awareness of this blob. On export (`normalizeTranslation`), our override detects fields of type `lms_reference` and emits a flat YAML structure:
-   ```yaml
-   lessons:
-     - target_uuid: 7777d880-73af-47f7-ac0c-28013987d732
-       target_type: lms_lesson
-       mandatory: true
-       auto_repeat_failed: false
-       required_score: 50
-       time_limit: 0
-   ```
-   On import (`setFieldValues`), it resolves the UUID back to a numeric `target_id` and reconstructs the data blob from the remaining keys.
+`lms_default_content` fixes all three problems without patching or forking `default_content` or the LMS module.
 
 ---
 
-### `greendale_default_content_lms` (site-specific)
+## How it works
 
-**Location:** `web/modules/custom/greendale_default_content_lms/`
+### Overriding the normalizer without patching contrib
 
-The site-specific content bundle for Greendale's LMS courses. Enabling this module imports all courses, lessons, and activities into a fresh environment.
+Drupal's service provider system allows any module to alter another module's registered services at container compile time. `LmsDefaultContentServiceProvider::alter()` replaces the `default_content.content_entity_normalizer` service class with an LMS-aware subclass — a guaranteed override regardless of module weight, with no YAML service ID conflicts.
 
-**Content included:**
+### What the normalizer fixes
 
-| Entity type   | Count |
-|---------------|-------|
-| Courses (group, bundle: lms_course) | 10 |
-| Lessons (lms_lesson) | 26 |
-| Activities (lms_activity) | 62 |
+**1. Computed field exclusion**
 
-**Dependencies declared in `.info.yml`:**
-- `greendale_default_content_media` — must install first so course image media entities exist before courses import
-- `lms_default_content` — provides the LMS-aware normalizer
+The parent normalizer filters internal and read-only fields but not computed `BaseFieldDefinition` fields. This override excludes any field where `isComputed() === true`, preventing binary blobs from appearing in exported YAML.
 
-**How to re-export content:**
+**2. Unloaded entity reference resolution**
 
-If courses, lessons, or activities are updated on a development environment and need to be re-bundled, run:
+When the parent normalizer encounters an entity reference whose entity was not lazy-loaded, it falls through to returning the raw numeric `target_id`. Numeric IDs are environment-specific and break on import. This override explicitly loads the entity by `target_id` + `target_type` and emits the UUID instead, suppressing the numeric ID entirely if the entity cannot be loaded.
 
-```bash
-ddev drush dcer group --folder=modules/custom/greendale_default_content_lms/content
+**3. `lms_reference` field serialization**
+
+On export, `lms_reference` items are written as a flat YAML structure with the entity reference and all metadata keys at the same level:
+
+```yaml
+lessons:
+  - target_uuid: 7777d880-73af-47f7-ac0c-28013987d732
+    target_type: lms_lesson
+    mandatory: true
+    auto_repeat_failed: false
+    required_score: 50
+    time_limit: 0
 ```
 
-Omitting the entity ID exports all group entities and their full dependency chain (lessons → activities). Run from inside the DDEV web container or prefix with `ddev`.
+On import, the UUID is resolved back to a numeric `target_id` and the remaining keys are reconstructed into the data blob.
 
 ---
 
-### `greendale_default_content_media` (site-specific, pre-existing)
+## Usage
 
-**Location:** `web/modules/custom/greendale_default_content_media/`
+### Requirements
 
-Pre-existing module for media entities. We extended its `content/` directory to also include:
+- Drupal 10.3+ or 11
+- [default_content](https://www.drupal.org/project/default_content) 2.x
+- [lms](https://www.drupal.org/project/lms) 1.1+
 
-- `content/media/` — 10 image media entities (course thumbnails)
-- `content/file/` — 10 file entities + PNG image files
-
-The file entities and images **must live in this module** (not in `greendale_default_content_lms`) so they are present in the database before media entities are imported. The `default_content` importer resolves references by UUID lookup — the referenced entity must already exist.
-
----
-
-## Install Order
-
-Enable modules in this order on a fresh environment:
+### Installation
 
 ```bash
+composer require ten7/lms_default_content
 drush en lms_default_content
-drush en greendale_default_content_media
-drush en greendale_default_content_lms
 ```
 
-The `greendale_default_content_lms.info.yml` dependency declaration enforces that `greendale_default_content_media` and `lms_default_content` are installed first, but the explicit ordering above is clearest for manual runs.
+Enable this module **before** any module that bundles LMS default content.
+
+### Creating a default content module for LMS content
+
+The pattern is the same as any `default_content`-based module. Create a custom module with a `content/` directory, export your LMS entities into it, and declare `lms_default_content` as a dependency in your `.info.yml`:
+
+```yaml
+dependencies:
+  - lms_default_content:lms_default_content
+```
+
+To export all courses and their full dependency chain (lessons → activities):
+
+```bash
+drush dcer group --folder=modules/custom/your_module/content
+```
+
+A few things to keep in mind when structuring your content module:
+
+- **File entities must exist before media entities.** If your courses reference media with image files, the file entities and image files need to be importable before the media entities that reference them. The simplest approach is to put them in a separate module that installs first.
+- **Media entities must exist before courses.** Declare the media module as a dependency of your content module so the install order is enforced automatically.
+- Enable `lms_default_content` first, then your content modules in dependency order.
 
 ---
 
-## Decisions Log
+## Decisions log
 
 | Decision | Rationale |
 |----------|-----------|
-| Use `default_content` ecosystem rather than `lms_yaml` | `lms_yaml` uses environment-specific numeric IDs; `default_content` uses UUIDs throughout. Also consistent with how we handle media. |
-| Extend `ContentEntityNormalizer` rather than writing from scratch | The parent handles most field types correctly; we only needed to intercept specific cases. |
-| Service provider `alter()` instead of declaring a competing service | `alter()` is a guaranteed override at container compile time. Declaring a new service with the same ID can have ordering ambiguity. |
-| No patching of `web/modules/contrib/` | Patches break on module updates and create maintenance burden. The service provider pattern achieves the same result cleanly from a custom module. |
-| `lms_default_content` as a separate contrib-intended module | The LMS-aware normalization logic is not Greendale-specific. Keeping it separate makes it easier to contribute upstream and reuse on other sites. |
-| Move file entities into `greendale_default_content_media` | `default_content` imports entities in the order it finds them; media entities reference file entities, so files must exist first. Co-locating them in the same module guarantees this. |
-| Export all courses with `drush dcer group` (no ID filter) | Simpler than maintaining a UUID list; exports the full dependency chain automatically. |
+| Extend `ContentEntityNormalizer` rather than writing from scratch | The parent handles most field types correctly; only specific cases needed interception. |
+| Service provider `alter()` instead of a competing service declaration | Guaranteed override at container compile time with no ordering ambiguity. |
+| No patching of contrib modules | Patches break on module updates. The service provider pattern achieves the same result cleanly. |
+| Separate module rather than a patch to `default_content` | Keeps the fix isolated and independently versioned; intended for eventual upstream contribution. |
