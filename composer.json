@@ -1,0 +1,10 @@
+{
+  "name": "ten7/lms_default_content",
+  "type": "drupal-module",
+  "description": "Extends the default_content ecosystem to support LMS entity types. Provides correct serialization of lms_reference fields including their metadata (mandatory, required_score, time_limit, etc.).",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "drupal/default_content": "^2.0",
+    "drupal/lms": "^1.1"
+  }
+}

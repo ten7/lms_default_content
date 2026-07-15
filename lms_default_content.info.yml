@@ -1,0 +1,8 @@
+name: 'LMS Default Content'
+type: module
+description: 'Extends the default_content ecosystem to support LMS entity types. Provides correct serialization of lms_reference fields including their metadata (mandatory, required_score, time_limit, etc.).'
+package: LMS
+core_version_requirement: ^10.3 || ^11
+dependencies:
+  - default_content:default_content
+  - lms:lms
